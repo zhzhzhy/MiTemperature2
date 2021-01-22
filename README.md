@@ -21,17 +21,33 @@ install via
 
 `pip3 install bluepy`
 
+### Requirements for reading Xiaomi Temperature and Humidity Sensor with ATC firmware
+
+Additional requirements if you want to use the atc version. If you don't use ATC version, please ignore this section.
+```
+apt install bluetooth libbluetooth-dev
+pip3 install pybluez
+```
+
+Bluetooth LE Scanning needs root. To run the script for AT with normal user rights, please execute
+```
+sudo setcap cap_net_raw,cap_net_admin+eip $(eval readlink -f `which python3`)
+```
+After a Python upgrade, you have to redo the above step.
+
 ## Usage
 
 ```
 ./LYWSD03MMC.py
 usage: LYWSD03MMC.py [-h] [--device AA:BB:CC:DD:EE:FF] [--battery ]
-                     [--count N] [--interface N] [--round] [--debounce]
-                     [--offset OFFSET] [--TwoPointCalibration]
-                     [--calpoint1 CALPOINT1] [--offset1 OFFSET1]
-                     [--calpoint2 CALPOINT2] [--offset2 OFFSET2]
-                     [--callback CALLBACK] [--name NAME] [--skipidentical N]
-                     [--influxdb N]
+                     [--count N] [--interface N] [--unreachable-count N]
+                     [--round] [--debounce] [--offset OFFSET]
+                     [--TwoPointCalibration] [--calpoint1 CALPOINT1]
+                     [--offset1 OFFSET1] [--calpoint2 CALPOINT2]
+                     [--offset2 OFFSET2] [--callback CALLBACK] [--name NAME]
+                     [--skipidentical N] [--influxdb N] [--atc]
+                     [--watchdogtimer X] [--devicelistfile DEVICELISTFILE]
+                     [--onlydevicelist] [--rssi]
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -40,6 +56,8 @@ optional arguments:
   --battery [], -b []   Get estimated battery level
   --count N, -c N       Read/Receive N measurements and then exit script
   --interface N, -i N   Specifiy the interface number to use, e.g. 1 for hci1
+  --unreachable-count N, -urc N
+                        Exit after N unsuccessful connection tries
 
 Rounding and debouncing:
   --round, -r           Round temperature to one decimal place
@@ -63,7 +81,7 @@ Offset calibration mode:
   --offset2 OFFSET2, -o2 OFFSET2
                         Enter the offset for the second calibration point
 
-Callback related functions:
+Callback related arguments:
   --callback CALLBACK, -call CALLBACK
                         Pass the path to a program/script that will be called
                         on each new measurement
@@ -76,9 +94,22 @@ Callback related functions:
                         Optimize for writing data to influxdb,1 timestamp
                         optimization, 2 integer optimization
 
+ATC mode related arguments:
+  --atc, -a             Read the data of devices with custom ATC firmware
+                        flashed
+  --watchdogtimer X, -wdt X
+                        Re-enable scanning after not receiving any BLE packet
+                        after X seconds
+  --devicelistfile DEVICELISTFILE, -df DEVICELISTFILE
+                        Specify a device list file giving further details to
+                        devices
+  --onlydevicelist, -odl
+                        Only read devices which are in the device list file
+  --rssi, -rs           Report RSSI via callback
+
 ```
 
-Note: When using rounding option you could see 0.1 degress more in the script output than shown on the display. Obviously the LYWSD03MMC just trancates the second decimal place.
+Note: When using rounding option you could see 0.1 degress more in the script output than shown on the display. Obviously the LYWSD03MMC just truncates the second decimal place.
 
 Reading the battery level with the standard Bluetooth Low Energy characteristics doesn't work. It always returns 99 % battery level. Or to be correct, sometimes 10 % when the battery is really empty, see https://github.com/JsBergbau/MiTemperature2/issues/1#issuecomment-588156894 . But often before that device just shuts down before it can report another battery level. With every measurement the Aqara sensor also transmits the battery voltage. This voltage is transformed into a battery level 3.1V are 100%, 2.1V 0%.
 
@@ -86,7 +117,70 @@ The `--count` option is intended to save even more power. So far it is not prove
 
 With the `--interface` option you specify the number of the bluetooth adapter to use. So `--interface 1` for using hci1
 
-With `--influxdb 1` you can use a influxdb optimized output. In this mode a timestamp with the current data is sent every 10 seconds to influxdb. Or technically speaking, each received measurement is snapped to a grid of 10 seconds. Don't use this feature together with `--skipidentical` otherwise it won't help. To use RLE compression for timestamps influxdb requires all 1000 timestamps which are mostly in a block to have the same interval. Only one missing timestamp leads to s8b compression for timestamps. Since influxdb handles identical values very efficiently you save much more space by writing every 10 seconds instead of skipping identical values. Without RLE 1000 timestamps needed about 1129 Bytes of data in my measurement. With RLE its only 12 Byte.
+With `--influxdb 1` you can use a influxdb optimized output. In this mode a timestamp with the current data is sent every 10 seconds to influxdb. Or technically speaking, each received measurement is snapped to a grid of 10 seconds. Don't use this feature together with `--skipidentical` otherwise it won't help. To use RLE compression for timestamps influxdb requires all 1000 timestamps which are mostly in a block to have the same interval. Only one missing timestamp leads to s8b compression for timestamps. Since influxdb handles identical values very efficiently you save much more space by writing every 10 seconds instead of skipping identical values. Without RLE 1000 timestamps needed about 1129 Bytes of data in my measurement. With RLE its only 12 Byte. Of course there are now more measurements stored in influxdb, but still overall size in influxdb is still lower. Depends also environment, of course. With a very steady environment and very seldom writing identical valus then size in influxdb would be smaller not writing every 10 seconds, of course. Integer optimizsation `--influxdb 2`is not implemented yet.
+
+`--unreachable-count N, -urc N` Use this option when you want to exit your script after collection the measurement but your sensor is somehow not reachable. Then after the specified number of failed connection tries the script will exit.
+
+### ATC Mode Usage
+
+Thanks to https://github.com/atc1441/ATC_MiThermometer there is an alternative firmware which sends out the measurements as Bluetooth Low Energy Advertisments. In this mode you don't have to connect to the sensor. This saves a lot of power, especially in cases where the signal strength is low, see https://github.com/JsBergbau/MiTemperature2/issues/32 
+I've also noticed a higher range. In addition you can have multiple receivers, see Node-RED section https://github.com/JsBergbau/MiTemperature2#callback-to-node-red
+For longer batterylife and higher stability ATC mode is recommended.
+
+In this mode the script listens for BLE advertisments and filters for ATC flashed LYWSD03MMC sensors. So you start only one instance of this script and it reads out all your sensors. You can have multiple receivers and thus have a kind of cell network and your sensors are portable in a quite wide range. Use it optimally with influxdb and `--influxdb 1`. With this option timestamps are snapped to 10s and since influxdb only stores one value for one timestamp you won't have duplicate data in your database.
+
+ATC firmware gives temperature only with one decimal place, so rounding and debouncing options are not available.
+
+`--watchdogtimer X` sometimes your device leaves BLE scanning mode, then you won't receive any data anymore. To avoid this after X seconds without receiving any BLE packet (not only from ATC sensors) BLE scanning mode is re-enabled. If you have configured your ATC LYWSD03MMC to advertise new data every 10 seconds, I recommend a setting of 5 seconds, so `--watchdogtimer 5`. On a Raspberry PI Zero W polling 10 sensors (2 are currently unreachable) this re-enabling BLE scan can happen a few times per minute. When polling 8 reachable sensors it happens less frequent but still at least once or twice a minute. 
+
+One note about new advertising data: The ATC LYWSD03MMC sends out the data about every second. After 10 seconds (or your configured interval) it advertises new data and to detect this, it increases the paket counter. Only the values of first paket of this series with the same paketcounter is displayed and reported by callback, since the data in one series is identical.
+
+`--devicelistfile <filename>` Use this option to give your sensors a name/alias. This file can also be on a network drive. So you can keep it up to date on a single place for multiple receivers. Also in this file is space for calibration data. 
+
+Note: ATC firmware shows other humidity values than the stock Xiaomi firmware, so you have to re-calibrate your sensors. The temperature value is unchanged compared to the Xiaomi sensor firmware.
+
+An example is given in the sensors.ini file in this repository. It is quite self explaining
+
+```
+[default]
+[info]
+info1=MAC Adresses must be in UPPERCASE otherwise sensor won't be found by the script
+info2=now all available options are listet. If offset1, offset2, calpoint1 and calpoint2 are given 2Point calibration is used instead of humidityOffset.
+info3= Note options are case sensitive
+;info4=Use semicolon to comment out lines
+sensorname=Specify an easy readable name
+humidityOffset=-5
+offset1 = -10
+offset2 = 10
+calpoint1 = 33
+calpoint2 = 75
+
+;[AA:BB:CC:DD:EE:FF]
+; sensorname=Bathroom
+; humidityOffset=-30
+; offset1 = -10
+; offset2 = -10
+; calpoint1 = 33
+; calpoint2 = 75
+
+[BD:AD:CA:1F:4D:12]
+sensorname=Living Room
+offset1 = -2
+offset2 = 2
+calpoint1 = 33
+calpoint2 = 75
+```
+
+`--onlydevicelist` Use this option to read only the data from sensors which are in your device list. This is quite useful if you have some spare sensors and you don't want your database get flooded with this data.
+
+`--rssi` Reports the RSSI via callback
+
+Hint for storing the data in influx: 
+When you have configured an advertisment interval of 10 seconds: Ideally store one measurement every 25 seconds to use very efficient RLE compression for your measurements. With storing the data every 25s, almost every timestamp is stored. This leads to RLE compression of the timestamp thus saving a lot of space in influxdb. With an interval of 20 seconds in tests it occured quite often, that timestamp slots were not filled and thus no RLE compression can be used. 
+
+With original firmware where you connect to each sensor every 6 seconds an measurement is sent and storing every 10 seconds a measurement is a good value.
+
+ATC mode uses passive scanning for saving battery life of the sensors. Read more about this here https://github.com/JsBergbau/MiTemperature2/issues/41#issuecomment-735361200
 
 ## Tips
 
@@ -99,7 +193,8 @@ The temperature values often change between the same values. To get cleaner temp
 
 ### Minus degrees
 
-When looking at the specifications this LYWSD03MMC Sensor is specified from 0 °C to 60 °C. The LYWSDCGQ (the Bluetooth Temperatur sensor with the round display and an AAA battery) is specified from -9.9. I can confirm this sensor also goes down to -9.9 °C. At colder temperatures it only shows an "L". But the correct data is still sent! So you even could use ist to watch the temperature in your freezer. However batterylife may be significantly reduced at those low temperatures.
+When looking at the specifications this LYWSD03MMC Sensor is specified from 0 °C to 60 °C. The LYWSDCGQ (the Bluetooth Temperatur sensor with the round display and an AAA battery) is specified from -9.9. 
+I can confirm the LYWSD03MMC also goes down to -9.9 °C. At colder temperatures it only shows an "L". But even at lower temperatures the correct temperature is still sent! So you even could use ist to watch the temperature in your freezer which is a lot below -9.9 °C. However batterylife may be significantly reduced at those low temperatures.
 
 ### High battery usage
 
@@ -156,6 +251,116 @@ Battery voltage: 2.944
 Battery level: 84
 ```
 
+### Sample output ATC mode
+
+```
+./LYWSD03MMC.py --atc
+Script started in ATC Mode
+----------------------------
+In this mode all devices within reach are read out, unless a namefile and --namefileonlydevices is specified.
+Also --name Argument is ignored, if you require names, please use --namefile.
+In this mode rounding and debouncing are not available, since ATC firmware sends out only one decimal place.
+ATC mode usually requires root rights. If you want to use it with normal user rights,
+please execute "sudo setcap cap_net_raw,cap_net_admin+eip $(eval readlink -f `which python3`)"
+You have to redo this step if you upgrade your python version.
+----------------------------
+Power ON bluetooth device 0
+Bluetooth device 0 is already enabled
+Enable LE scan
+scan params: interval=1280.000ms window=1280.000ms own_bdaddr=public whitelist=no
+socket filter set to ptype=HCI_EVENT_PKT event=LE_META_EVENT
+Listening ...
+BLE packet: XX:XX:XX:XX:XX:XX 00 1110161a18xxxxxxxxxxxx00dc2e420afdd6 -60
+Temperature:  22.0
+Humidity:  46
+Battery voltage: 2.813 V
+RSSI: -60 dBm
+
+BLE packet: XX:XX:XX:XX:XX:XX 00 1110161a18xxxxxxxxxxxx00e22d570bab16 -90
+Temperature:  22.6
+Humidity:  45
+Battery voltage: 2.987 V
+RSSI: -90 dBm
+
+BLE packet: XX:XX:XX:XX:XX:XX 00 1110161a18xxxxxxxxxxxx009d314f0b6456 -65
+Temperature:  15.7
+Humidity:  49
+Battery voltage: 2.916 V
+RSSI: -65 dBm
+
+BLE packet: XX:XX:XX:XX:XX:XX 00 1110161a18xxxxxxxxxxxx00d2313d0ace30 -90
+Temperature:  21.0
+Humidity:  49
+Battery voltage: 2.766 V
+RSSI: -90 dBm
+
+BLE packet: XX:XX:XX:XX:XX:XX 00 1110161a18xxxxxxxxxxxx00d331430b0579 -91
+Temperature:  21.1
+Humidity:  49
+Battery voltage: 2.821 V
+RSSI: -91 dBm
+
+BLE packet: XX:XX:XX:XX:XX:XX 00 1110161a18xxxxxxxxxxxx008431530b872b -77
+Temperature:  13.2
+Humidity:  49
+Battery voltage: 2.951 V
+RSSI: -77 dBm
+
+BLE packet: XX:XX:XX:XX:XX:XX 00 1110161a18xxxxxxxxxxxx00cf344d0b5264 -81
+Temperature:  20.7
+Humidity:  52
+Battery voltage: 2.898 V
+RSSI: -81 dBm
+
+BLE packet: XX:XX:XX:XX:XX:XX 00 1110161a18xxxxxxxxxxxx00d5304d0b5607 -64
+Temperature:  21.3
+Humidity:  48
+Battery voltage: 2.902 V
+RSSI: -64 dBm
+
+BLE packet: XX:XX:XX:XX:XX:XX 00 1110161a18xxxxxxxxxxxx00bf36500b765d -87
+Temperature:  19.1
+Humidity:  54
+Battery voltage: 2.934 V
+RSSI: -87 dBm
+
+BLE packet: XX:XX:XX:XX:XX:XX 00 1110161a18xxxxxxxxxxxx00d2303a0ab84b -73
+Temperature:  21.0
+Humidity:  48
+Battery voltage: 2.744 V
+RSSI: -73 dBm
+
+BLE packet: XX:XX:XX:XX:XX:XX 00 1110161a18xxxxxxxxxxxx008431530b872c -77
+Temperature:  13.2
+Humidity:  49
+Battery voltage: 2.951 V
+RSSI: -77 dBm
+
+BLE packet: XX:XX:XX:XX:XX:XX 00 1110161a18xxxxxxxxxxxx00d2314f0b60d1 -91
+Temperature:  21.0
+Humidity:  49
+Battery voltage: 2.912 V
+RSSI: -91 dBm
+
+BLE packet: XX:XX:XX:XX:XX:XX 00 1110161a18xxxxxxxxxxxx00d330400aedf1 -94
+Temperature:  21.1
+Humidity:  48
+Battery voltage: 2.797 V
+RSSI: -94 dBm
+
+BLE packet: XX:XX:XX:XX:XX:XX 00 1110161a18xxxxxxxxxxxx00484a420af634 -91
+Temperature:  7.2
+Humidity:  74
+Battery voltage: 2.806 V
+RSSI: -91 dBm
+
+BLE packet: XX:XX:XX:XX:XX:XX 00 1110161a18xxxxxxxxxxxx00d231530b8ab0 -88
+Temperature:  21.0
+Humidity:  49
+Battery voltage: 2.954 V
+RSSI: -88 dBm
+```
+
 ### More info
 
 If you like gatttool you can use it, too. However it didn't notice when BT connection was lost, while this Python-Script automatically reestablishes the connection.
@@ -197,10 +402,16 @@ sudo hciconfig hci0 down
 sudo hciconfig hci0 up
 ```
 
+Sometimes bluetooth gets stucks, especially if you have other software accessing/using bluetooth on your devices. After a reboot everything was fine again. If that happens a lot, you can use an additional Blueooth receiver and use it with the `--interface` option.
+
 ## Calibration
 
+Note: If you have calibrated your sensors and flash ATC firmware, you have to calibrate them again.
+
 Especially humidity value is often not very accurate. You get better results if you calibrate against a known humidity. This can be done very easy with common salt (NaCl). Make a saturated solution and put it together with the Xiaomi Bluetooth thermometer in an airtight box. Ensure that no (salt) water gets in contact with the device. Saltwater is very corrosive.
-Wait about 24 hours with a constant temperature. You should now have about 75 % relative humidity. I don't know how long it takes for the sensors to drift. So I will redo this procedure about every year.
+Wait about 24 - 48 hours with a constant temperature. You should now have about 75 % relative humidity. I don't know how long it takes for the sensors to drift. So I will redo this procedure about every year. 
+
+A quite constant temperature while calibration is very important, because with temperature also humidity changes and it takes some time for the system to rebalance the humidity. In my experiments at 20 °C room temperature it took about 48 hours until humidity readings were quite stable and didn't change anymore. So give it time. If you take the sensors out of calibration humidity too early they haven't reached the final value yet.
 
 ### Offset calibration
 
@@ -208,7 +419,14 @@ E.g. mine shows 79 % RH when actually there is 75 %. Excecute the script with `-
 
 ### Two point calibration
 
-The offset is not linear over the whole humidity values. So you should calibrate at another point. MagnesiumChloride is recommended giving about 33% RH at 20 °C. Also Calciumchloride is suitable, but the humidity depends more on temperature. Be sure to have 20 °C. https://www.salzwiki.de/index.php/Deliqueszenzfeuchte
+The offset is not linear over the whole humidity values, see https://www.rotronic.com/media/productattachments/files/c/a/capacitive_humidity_sensor_final.pdf Page 2.
+
+>Linearity Errors. The typical response of a relative humidity capacitive sensor (between 0 and 100 percent RH) is not linear. Depending on the correction made by the electronic circuits, the instrument may have a linearity error.
+
+So you should calibrate at another point. MagnesiumChloride is recommended as giving about 33% RH at 20 °C. Please use very pure MgCl. It is also sold as bath salt and stuff like that. For high accuracy please use a purity > 99 %.
+
+Also Calciumchloride is suitable, but the humidity depends more on temperature. Be sure to have 20 °C. https://www.salzwiki.de/index.php/Deliqueszenzfeuchte
+CaCl is often found in these small non-electric dehumidifiers which you can refill with refill packs.
 
 My Xiaomi Bluetooth thermometer shows 39% RH at 33% RH. So wie here have an offset of 6.
 Another hygrometer show 69 % at 75% RH and 33% RH at 33% RH. So offset +6 at 75% TH and offset 0 at 33% RH.
@@ -253,14 +471,16 @@ Calibrated humidity: 49
 
 Via the --call option a script can be passed to sent the data to.
 Example
-`./LYWSD03MMC.py -d AA:BB:CC:DD:EE:FF -2p -p2 75 -o2 -4 -p1 33 -o1 -6 --name MySensor --callback sendData.sh`
+`./LYWSD03MMC.py -d AA:BB:CC:DD:EE:FF -2p -p2 75 -o2 -4 -p1 33 -o1 -6 --name MySensor --callback sendToFile.sh`
 If you don't give the sensor a name, the MAC-Address is used. The callback script must be within the same folder as this script.
 The values outputted depends on the options like calibration or battery. So the format is printed in the first argument.
 Example callback
 
 ```
 #!/bin/bash
+# This is quite useful for testing
 echo $@ >> data.txt
+exit 0
 ```
 
 Gives in data.txt `sensorname,temperature,humidity,voltage,humidityCalibrated,timestamp MySensor 20.61 54 2.944 49 1582120122`
@@ -276,3 +496,39 @@ All data received from the sensor is stored in a list and transmitted sequential
 ## Send metrics to Prometheus
 
 [Read instruction about integartion with Prometheus Push Gateway](./prometheus/README.md)
+
+## Callback to Node-RED
+Finally there is a callback and sample flows to send the data to Node-RED. Especially if you have multiple receivers this is quite comfortable to manage the name and calibration data of your sensors at one place in Node-Red. No need to change configuration in any of your Receivers. 
+
+This solution makes it also very easy to have multiple Receivers and you can easily move the devices around between them. As long as one device reaches one receiver everything will work. If it reaches multiple receivers you can even reboot them without data loss.
+
+To use the script with Node-RED just import the flows from `MiTemperature2 Node-Red Flows.txt`
+With that flow you can even start the script in ATC-Mode via Node-RED. If you are user `pi` and in your home directory, clone this Repo via `git clone https://github.com/JsBergbau/MiTemperature2`, make `LYWSD03MMC.py` and `./sendToNodeRed.sh` executable and you even have not to change the script execution part.
+
+The Node-RED flow is documented with comments for easy usage. If theres missing some information, just open an issue and I'll have a look.
+
+For easily switching between filtering of Node-Red and the Python-Script LYWSD03MMC there are two scripts included.
+``` ./iniToJSON.py -h
+usage: iniToJSON.py [-h] --readfile filename [--writefile filename]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --readfile filename, -rf filename
+                        Specify filename of ini-File to convert
+  --writefile filename, -wf filename
+                        Specify filename of json-File to convert
+```
+Use these to convert between ini and JSON for usage in Node-RED.
+
+```./jsonToIni.py -h
+usage: jsonToIni.py [-h] --readfile filename --writefile filename
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --readfile filename, -rf filename
+                        Specify filename of json-File to convert
+  --writefile filename, -wf filename
+                        Specify filename of json-File to convert
+```
+
+
